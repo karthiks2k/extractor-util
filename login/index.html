@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Login</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        padding: 1.5rem;
+        background: #f5f7f5;
+        color: #202b28;
+        font-family: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+      }
+
+      .login-card {
+        width: min(100%, 24rem);
+        padding: 2rem;
+        border-radius: 4px;
+        background: #fff;
+        box-shadow: 0 10px 25px rgb(32 43 40 / 8%);
+      }
+
+      h1 {
+        margin: 0 0 1.5rem;
+        text-align: center;
+      }
+
+      .field {
+        margin-bottom: 1rem;
+      }
+
+      label {
+        display: block;
+        margin-bottom: 0.4rem;
+        font-weight: 600;
+      }
+
+      input {
+        width: 100%;
+        padding: 0.7rem 0.75rem;
+        border: 1px solid #c5d0cb;
+        border-radius: 4px;
+        background: #fff;
+        color: inherit;
+        font: inherit;
+      }
+
+      input:focus-visible,
+      button:focus-visible {
+        border-color: #16745c;
+        outline: 3px solid #8cc9b2;
+        outline-offset: 2px;
+      }
+
+      button {
+        width: 100%;
+        margin-top: 0.5rem;
+        padding: 0.75rem;
+        border: 0;
+        border-radius: 4px;
+        background: #16745c;
+        color: #fff;
+        cursor: pointer;
+        font: inherit;
+        font-weight: 600;
+      }
+
+      button:hover {
+        background: #105b48;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="login-card">
+      <h1>Login</h1>
+      <form>
+        <div class="field">
+          <label for="username">Username</label>
+          <input id="username" name="username" type="text" autocomplete="username" required>
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+        </div>
+        <button type="submit">Login</button>
+      </form>
+    </main>
+    <script>
+      document.querySelector("form").addEventListener("submit", (event) => {
+        event.preventDefault();
+        window.location.assign("../reports/");
+      });
+    </script>
+  </body>
+</html>
