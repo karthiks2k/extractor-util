@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Payslip Extractor</title>
+    <style>
+      * { box-sizing: border-box; }
+
+      body {
+        min-height: 100vh;
+        margin: 0;
+        padding: 2rem 1rem;
+        background: #f5f7f5;
+        color: #202b28;
+        font-family: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+      }
+
+      main {
+        width: min(100%, 38rem);
+        margin: 0 auto;
+        padding: 2rem;
+        border-radius: 4px;
+        background: #fff;
+        box-shadow: 0 10px 25px rgb(32 43 40 / 8%);
+      }
+
+      h1 { margin-top: 0; }
+      p { line-height: 1.5; }
+
+      label {
+        display: block;
+        margin-bottom: 0.4rem;
+        font-weight: 600;
+      }
+
+      input {
+        width: 100%;
+        margin-bottom: 1rem;
+        padding: 0.75rem;
+        border: 1px solid #c5d0cb;
+        border-radius: 4px;
+        color: inherit;
+        font: inherit;
+      }
+
+      input:focus-visible,
+      button:focus-visible {
+        outline: 3px solid #8cc9b2;
+        outline-offset: 2px;
+      }
+
+      button {
+        padding: 0.75rem 1rem;
+        border: 0;
+        border-radius: 4px;
+        background: #16745c;
+        color: #fff;
+        cursor: pointer;
+        font: inherit;
+        font-weight: 600;
+      }
+
+      button:hover { background: #105b48; }
+      button:disabled { cursor: wait; opacity: 0.7; }
+
+      #status {
+        margin-top: 1.5rem;
+        padding: 1rem;
+        border: 1px solid #d5ded9;
+        border-radius: 4px;
+        background: #f7faf8;
+      }
+
+      #status[hidden] { display: none; }
+      #status h2 { margin: 0 0 0.75rem; font-size: 1.1rem; }
+      #status p { margin: 0.4rem 0; }
+
+      #error {
+        margin-top: 1rem;
+        color: #a32020;
+      }
+
+      @media (max-width: 520px) {
+        main { padding: 1.25rem; }
+        button { width: 100%; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Payslip Extractor</h1>
+      <p>Enter a payslip filter to extract the payslips. This attempt to download every matching payslip.</p>
+      <form id="run-form">
+        <input id="filter" name="filter" type="text" maxlength="100" required autocomplete="off">
+        <button id="run-button" type="submit">Run tests</button>
+      </form>
+      <section id="status" aria-live="polite" hidden>
+        <h2 id="run-status">Test status</h2>
+        <p id="run-message"></p>
+        <p>Total matching payslips: <span id="total">0</span></p>
+        <p>Successfully downloaded: <span id="successful">0</span></p>
+        <p>Failed downloads: <span id="failed">0</span></p>
+      </section>
+      <p id="error" role="alert"></p>
+    </main>
+    <script>
+      const form = document.querySelector("#run-form");
+      const filterInput = document.querySelector("#filter");
+      const runButton = document.querySelector("#run-button");
+      const status = document.querySelector("#status");
+      const errorMessage = document.querySelector("#error");
+
+      function showRun(run) {
+        status.hidden = false;
+        document.querySelector("#run-status").textContent =
+          run.status === "running" ? "Tests running" :
+          run.status === "passed" ? "Tests passed" : "Tests failed";
+        document.querySelector("#run-message").textContent = run.message;
+        document.querySelector("#total").textContent = run.total;
+        document.querySelector("#successful").textContent = run.successful;
+        document.querySelector("#failed").textContent = run.failed;
+      }
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        errorMessage.textContent = "";
+        status.hidden = true;
+        runButton.disabled = true;
+
+        try {
+          const response = await fetch("/api/run-tests", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ filter: filterInput.value })
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "Unable to start tests.");
+
+          let running = true;
+          while (running) {
+            const statusResponse = await fetch(`/api/runs/${result.id}`);
+            const run = await statusResponse.json();
+            if (!statusResponse.ok) throw new Error(run.error || "Unable to read test status.");
+            showRun(run);
+            running = run.status === "running";
+            if (running) await new Promise((resolve) => setTimeout(resolve, 750));
+          }
+        } catch (error) {
+          errorMessage.textContent = error.message;
+        } finally {
+          runButton.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>
