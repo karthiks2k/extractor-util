@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "start": "node server.js",
+    "serve": "node server.js --login",
     "test:e2e": "playwright test"
   },
   "devDependencies": {

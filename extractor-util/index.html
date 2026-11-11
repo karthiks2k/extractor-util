@@ -76,6 +76,26 @@
       #status h2 { margin: 0 0 0.75rem; font-size: 1.1rem; }
       #status p { margin: 0.4rem 0; }
 
+      .file-list {
+        margin-top: 1rem;
+        overflow-x: auto;
+      }
+
+      #file-results {
+        width: 100%;
+        border-collapse: collapse;
+        text-align: left;
+      }
+
+      #file-results th,
+      #file-results td {
+        padding: 0.5rem;
+        border-bottom: 1px solid #d5ded9;
+        vertical-align: top;
+      }
+
+      #file-results td { overflow-wrap: anywhere; }
+
       #error {
         margin-top: 1rem;
         color: #a32020;
@@ -101,6 +121,21 @@
         <p>Total matching payslips: <span id="total">0</span></p>
         <p>Successfully downloaded: <span id="successful">0</span></p>
         <p>Failed downloads: <span id="failed">0</span></p>
+        <div class="file-list">
+          <table id="file-results">
+            <thead>
+              <tr>
+                <th scope="col">Employee</th>
+                <th scope="col">File</th>
+                <th scope="col">Local path</th>
+                <th scope="col">Status</th>
+                <th scope="col">Attempts</th>
+                <th scope="col">Error</th>
+              </tr>
+            </thead>
+            <tbody id="file-rows"></tbody>
+          </table>
+        </div>
       </section>
       <p id="error" role="alert"></p>
     </main>
@@ -110,16 +145,70 @@
       const runButton = document.querySelector("#run-button");
       const status = document.querySelector("#status");
       const errorMessage = document.querySelector("#error");
+      const runStatus = document.querySelector("#run-status");
+      const runMessage = document.querySelector("#run-message");
+      const totalCount = document.querySelector("#total");
+      const successfulCount = document.querySelector("#successful");
+      const failedCount = document.querySelector("#failed");
+      const fileRows = document.querySelector("#file-rows");
 
-      function showRun(run) {
+      function renderFiles(files) {
+        fileRows.replaceChildren();
+
+        for (const file of files) {
+          const row = document.createElement("tr");
+          const values = [
+            file.employeeNumber,
+            file.fileName,
+            file.filePath,
+            file.status,
+            file.attempts,
+            file.error
+          ];
+
+          for (const value of values) {
+            const cell = document.createElement("td");
+            cell.textContent = value;
+            row.append(cell);
+          }
+
+          fileRows.append(row);
+        }
+      }
+
+      function setStatus(run) {
+        const statusLabel = {
+          running: "Tests running",
+          passed: "Tests passed",
+          failed: "Tests failed"
+        };
+
+        runStatus.textContent = statusLabel[run.status] || "Test status";
+        runMessage.textContent = run.message;
+        totalCount.textContent = run.total;
+        successfulCount.textContent = run.successful;
+        failedCount.textContent = run.failed;
+        renderFiles(run.files || []);
         status.hidden = false;
-        document.querySelector("#run-status").textContent =
-          run.status === "running" ? "Tests running" :
-          run.status === "passed" ? "Tests passed" : "Tests failed";
-        document.querySelector("#run-message").textContent = run.message;
-        document.querySelector("#total").textContent = run.total;
-        document.querySelector("#successful").textContent = run.successful;
-        document.querySelector("#failed").textContent = run.failed;
+      }
+
+      async function waitForRunCompletion(runId) {
+        while (true) {
+          const response = await fetch(`/api/runs/${runId}`);
+          const run = await response.json();
+
+          if (!response.ok) {
+            throw new Error(run.error || "Unable to read test status.");
+          }
+
+          setStatus(run);
+
+          if (run.status !== "running") {
+            return;
+          }
+
+          await new Promise((resolve) => setTimeout(resolve, 750));
+        }
       }
 
       form.addEventListener("submit", async (event) => {
@@ -135,17 +224,12 @@
             body: JSON.stringify({ filter: filterInput.value })
           });
           const result = await response.json();
-          if (!response.ok) throw new Error(result.error || "Unable to start tests.");
 
-          let running = true;
-          while (running) {
-            const statusResponse = await fetch(`/api/runs/${result.id}`);
-            const run = await statusResponse.json();
-            if (!statusResponse.ok) throw new Error(run.error || "Unable to read test status.");
-            showRun(run);
-            running = run.status === "running";
-            if (running) await new Promise((resolve) => setTimeout(resolve, 750));
+          if (!response.ok) {
+            throw new Error(result.error || "Unable to start tests.");
           }
+
+          await waitForRunCompletion(result.id);
         } catch (error) {
           errorMessage.textContent = error.message;
         } finally {

@@ -287,10 +287,13 @@
 			const emptyState = document.querySelector("#empty-state");
 			const activePdfUrls = new Set();
 
-			function createPayslipPdfUrl(payslip) {
-				const escapePdfText = (value) => String(value)
+			function escapePdfText(value) {
+				return String(value)
 					.replace(/[^\x20-\x7E]/g, "?")
 					.replace(/[\\()]/g, "\\$&");
+			}
+
+			function createPdfDocument(payslip) {
 				const lines = [
 					"BT",
 					"/F1 20 Tf",
@@ -305,6 +308,7 @@
 					`(${escapePdfText(`Period: ${payslip.month} ${payslip.year}`)}) Tj`,
 					"ET"
 				].join("\n");
+
 				const objects = [
 					"<< /Type /Catalog /Pages 2 0 R >>",
 					"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
@@ -315,6 +319,7 @@
 
 				let pdf = "%PDF-1.4\n";
 				const offsets = [0];
+
 				for (const [index, object] of objects.entries()) {
 					offsets.push(pdf.length);
 					pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
@@ -327,25 +332,48 @@
 				}
 				pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${crossReferenceOffset}\n%%EOF`;
 
+				return pdf;
+			}
+
+			function createPayslipPdfUrl(payslip) {
+				const pdf = createPdfDocument(payslip);
 				return URL.createObjectURL(new Blob([pdf], { type: "application/pdf" }));
 			}
 
-			searchForm.addEventListener("submit", (event) => {
-				event.preventDefault();
-				const query = searchInput.value.trim().toLowerCase();
-				if (!query) return;
+			function createActionLink({ url, label, title, svgMarkup, downloadName = "" }) {
+				const link = document.createElement("a");
+				link.className = "document-link";
+				link.href = url;
+				link.target = "_blank";
+				link.rel = "noopener noreferrer";
+				link.setAttribute("aria-label", label);
+				link.title = title;
+				if (downloadName) {
+					link.download = downloadName;
+				}
+				link.innerHTML = svgMarkup;
+				return link;
+			}
 
-				const matches = payslips.filter((payslip) =>
+			function getMatchingPayslips(query) {
+				return payslips.filter((payslip) =>
 					[payslip.employeeNumber, payslip.name, payslip.year, payslip.month]
 						.some((value) => String(value).toLowerCase().includes(query))
 				);
+			}
 
-				for (const pdfUrl of activePdfUrls) URL.revokeObjectURL(pdfUrl);
+			function renderMatches(matches) {
+				for (const pdfUrl of activePdfUrls) {
+					URL.revokeObjectURL(pdfUrl);
+				}
 				activePdfUrls.clear();
 				rows.replaceChildren();
+
 				for (const payslip of matches) {
 					const row = document.createElement("tr");
-					for (const value of [payslip.employeeNumber, payslip.name, payslip.year, payslip.month]) {
+					const values = [payslip.employeeNumber, payslip.name, payslip.year, payslip.month];
+
+					for (const value of values) {
 						const cell = document.createElement("td");
 						cell.textContent = value;
 						row.append(cell);
@@ -354,32 +382,39 @@
 					const payslipCell = document.createElement("td");
 					const actions = document.createElement("div");
 					actions.className = "payslip-actions";
+
 					const pdfUrl = createPayslipPdfUrl(payslip);
 					activePdfUrls.add(pdfUrl);
 
-					const viewLink = document.createElement("a");
-					viewLink.className = "document-link";
-					viewLink.href = pdfUrl;
-					viewLink.target = "_blank";
-					viewLink.rel = "noopener noreferrer";
-					viewLink.setAttribute("aria-label", `View payslip for ${payslip.name}, ${payslip.month} ${payslip.year}`);
-					viewLink.title = "View payslip";
-					viewLink.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
+					const viewLink = createActionLink({
+						url: pdfUrl,
+						label: `View payslip for ${payslip.name}, ${payslip.month} ${payslip.year}`,
+						title: "View payslip",
+						svgMarkup: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"></path><circle cx="12" cy="12" r="3"></circle></svg>'
+					});
 
-					const downloadLink = document.createElement("a");
-					downloadLink.className = "document-link";
-					downloadLink.href = pdfUrl;
-					downloadLink.download = `${payslip.employeeNumber}-${payslip.year}-${payslip.month}-payslip.pdf`;
-					downloadLink.setAttribute("aria-label", `Download payslip for ${payslip.name}, ${payslip.month} ${payslip.year}`);
-					downloadLink.title = "Download payslip";
-					downloadLink.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><path d="m7 10 5 5 5-5M12 15V3"></path></svg>';
+					const downloadLink = createActionLink({
+						url: pdfUrl,
+						label: `Download payslip for ${payslip.name}, ${payslip.month} ${payslip.year}`,
+						title: "Download payslip",
+						svgMarkup: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><path d="m7 10 5 5 5-5M12 15V3"></path></svg>',
+						downloadName: `${payslip.employeeNumber}-${payslip.year}-${payslip.month}-payslip.pdf`
+					});
 
 					actions.append(viewLink, downloadLink);
 					payslipCell.append(actions);
 					row.append(payslipCell);
 					rows.append(row);
 				}
+			}
 
+			searchForm.addEventListener("submit", (event) => {
+				event.preventDefault();
+				const query = searchInput.value.trim().toLowerCase();
+				if (!query) return;
+
+				const matches = getMatchingPayslips(query);
+				renderMatches(matches);
 				results.hidden = false;
 				emptyState.hidden = matches.length > 0;
 				resultCount.textContent = `${matches.length} ${matches.length === 1 ? "record" : "records"}`;

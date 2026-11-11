@@ -94,10 +94,14 @@
       </form>
     </main>
     <script>
-      document.querySelector("form").addEventListener("submit", (event) => {
+      const loginForm = document.querySelector("form");
+
+      function handleLoginSubmit(event) {
         event.preventDefault();
         window.location.assign("../reports/");
-      });
+      }
+
+      loginForm.addEventListener("submit", handleLoginSubmit);
     </script>
   </body>
 </html>
