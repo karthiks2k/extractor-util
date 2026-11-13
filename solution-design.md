@@ -37,14 +37,15 @@ flowchart LR
     API -->|Persist job and report records| DB[(Amazon RDS PostgreSQL)]
     API -->|Enqueue job ID| Queue[Amazon SQS]
     Queue --> Worker[Isolated Playwright worker]
-    Worker -->|Check for an existing report| DB
+    Worker -->|Sign in with approved service account; search and apply filters| Target[Target payroll/reporting site]
+    Target -->|Preview page with matching employee report rows| Worker
+    Worker -->|For each row, look up its cache identity| DB
     DB -->|Matching report details, if found| Worker
-    Worker -->|Check that the stored file is available| S3[(Private Amazon S3 bucket)]
+    Worker -->|If metadata is found, verify its S3 file| S3[(Private Amazon S3 bucket)]
     S3 -->|File availability and integrity| Worker
-    Worker --> Cache{Can the stored report be reused?}
+    Worker --> Cache{Is a valid stored report available?}
     Cache -->|Yes: reuse the S3 file; record reuse for this job| DB
-    Cache -->|No: claim the report key, recheck, then request export| Target[Target payroll/reporting site]
-    Worker -->|Sign in with the approved service account| Target
+    Cache -->|No: claim the cache key, recheck, then request this row's export| Target
     Target -->|Exported report| Worker
     Worker -->|Save a temporary copy for validation| Temp[Ephemeral temporary storage]
     Temp -->|Upload validated report| S3
