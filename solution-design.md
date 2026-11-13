@@ -62,8 +62,8 @@ Do not treat the current Azure App Service script as a complete design for runni
 3. In one database transaction, create a queued job and its request/audit metadata. Enqueue its ID; handle enqueue failure explicitly so the job cannot remain falsely queued.
 4. A worker claims the job, marks it running, and opens an isolated browser context. Retrieve the service-account secret at runtime from a secrets manager; never send it to the UI or persist it in job records.
 5. Navigate the target's tax-year and report selection flow, apply the validated filters, select required entries, and collect result rows within the configured cap.
-6. For each result, select the row, invoke the requested export, capture the browser download to ephemeral worker storage, validate file type/signature and non-zero size, calculate a checksum, and upload to S3.
-7. Persist each report's status and metadata, then calculate the job's final status: `succeeded`, `partially_succeeded`, or `failed`. A no-match result is a completed job with zero reports, not a worker error.
+6. For each result, derive a cache identity from the employee number, tax year, report type, export format, and any report-specific options that affect the exported content. Before invoking the export, look up a previously successful report with that identity in PostgreSQL and verify that its S3 object exists and matches the recorded metadata. If it does, reuse that object and skip the target export and download. Otherwise, claim the cache identity so concurrent jobs do not both download the same report; after acquiring the claim, recheck the metadata and S3 object before proceeding. On a cache miss, select the row, invoke the requested export, capture the browser download to ephemeral worker storage, validate file type/signature and non-zero size, calculate a checksum, and upload to S3.
+7. Persist each report's status and metadata, then calculate the job's final status: `succeeded`, `partially_succeeded`, or `failed`. A reused report is a successful outcome for the new job and points to the existing S3 object; preserve the artifact's original `stored_at` and record that it was reused. A no-match result is a completed job with zero reports, not a worker error.
 8. Retry only transient failures with bounded exponential backoff. Do not retry invalid filters, unsupported report/format combinations, authorization failures, or other deterministic errors. Make retries idempotent and route exhausted jobs to a dead-letter queue for operator review.
 9. Expose status and per-report outcomes to the requester. Provide access to files only after application authorization; use short-lived presigned URLs or a server-mediated download.
 
@@ -88,10 +88,13 @@ Use PostgreSQL as the source of truth for job state and report metadata; S3 is t
 
 - `id` UUID primary key; `job_id` foreign key
 - Target record identifier and only the employee/report attributes needed for audit and retrieval; treat these as sensitive personal data
-- `status`, `attempt_count`, `export_format`, safe `original_filename`, MIME type, byte size, SHA-256 checksum
+- `status` (including whether the report was newly downloaded or reused), `attempt_count`, `export_format`, safe `original_filename`, MIME type, byte size, SHA-256 checksum
 - `s3_bucket`, opaque `s3_object_key`; never put employee names, NI numbers, or other direct identifiers in object keys
+- Opaque cache identity and, for a reused report, a reference to the metadata row from which it was reused
 - `created_at`, `stored_at`, `completed_at`, safe failure code/message
 - Unique constraints to prevent duplicate report rows for the same target record within a job
+
+Use the employee number together with tax year, report type, export format, and any content-affecting report options to identify a reusable report; employee number alone is not sufficient. Store the cache identity in an opaque form and keep it out of S3 object keys. Reuse only successful metadata whose object is present in S3 and passes integrity checks. If the object is missing or invalid, treat it as a cache miss and download it again. Serialize cache misses with a database-backed claim or lease keyed by cache identity, and recheck after acquiring the claim, so simultaneous jobs can reuse the first successful result instead of downloading it twice. Define an approved freshness/expiration policy for reports that may change at the target.
 
 Use migrations and database constraints for valid states and relationships. Store no report contents in PostgreSQL. Minimize personal metadata, restrict database access, and define an explicit retention/deletion policy for both metadata and S3 objects before production.
 
@@ -99,15 +102,14 @@ Use migrations and database constraints for valid states and relationships. Stor
 
 - Use a private bucket with public access blocked, encryption at rest (prefer a customer-managed KMS key where required), TLS in transit, least-privilege worker/application roles, and access logging/auditing.
 - Use opaque, non-identifying object keys, such as `reports/{tax-year}/{report-type}/{report-id}.{extension}`. Preserve the target export as-is; do not transform or silently substitute formats.
-- Use an idempotent key for retries of the same report. A deliberate rerun creates a new extraction/report identity; define whether prior versions are retained or expire under the approved retention policy.
-- Apply lifecycle expiration and deletion consistently to objects, database metadata, and backups in accordance with the organization's approved retention requirements.
+- Use an idempotent key for retries of the same report. A deliberate job rerun creates a new job/report record, but may reference the existing S3 object when the cache identity matches and the report is still valid under the freshness policy. Apply lifecycle expiration and deletion consistently to objects, database metadata, and backups in accordance with the organization's approved retention requirements; do not delete a shared object while retained report records still reference it.
 - Do not expose bucket credentials. Authorize every file download against the requesting user and job; presigned URLs must be short-lived and scoped to one object.
 - Store target credentials in a managed secret store, rotate them, and grant the worker only the required target and storage access. Record which application user requested each job even though a service account performs the target login.
 - Confirm the service account's approved report scope and target-system terms. MFA, CAPTCHA, IP restrictions, session expiry, and password rotation are discovery gates. Do not bypass target controls; use an approved API or target-approved authentication flow if unattended browser login is not supported.
 
 ## Implementation plan
 
-1. **Resolve discovery gates.** Confirm the hosting/cloud decision, approved AWS region, PostgreSQL service, application SSO provider (the repository's demo login is not existing authentication), data retention and rerun policy, target service-account permissions, and whether the target offers an approved API or stable unattended browser login. Verify export formats and exact filter/lookup behavior for P60 and Payslips.
+1. **Resolve discovery gates.** Confirm the hosting/cloud decision, approved AWS region, PostgreSQL service, application SSO provider (the repository's demo login is not existing authentication), data retention, cache freshness and rerun policies, target service-account permissions, and whether the target offers an approved API or stable unattended browser login. Verify export formats and exact filter/lookup behavior for P60 and Payslips.
 2. **Prove the target workflow safely.** In a non-production environment or with approved test data, automate login, year/report selection, required-entry selection, filtering, result pagination, row selection, export, and download for one P60 and one payslip. Measure authentication stability and a 500-report run before choosing worker concurrency/timeouts.
 3. **Implement durable backend.** Add authenticated job/report APIs, PostgreSQL migrations, queueing, isolated Playwright workers, secret retrieval, S3 upload, idempotency, bounded retries, and dead-letter handling.
 4. **Extend the UI.** Replace the single generic filter with tax-year/report selection and report-specific accessible filters/lookups. Add export-format selection, validation, progress, per-report outcomes, and authorized download actions.
@@ -119,7 +121,8 @@ Use migrations and database constraints for valid states and relationships. Stor
 - A requester can submit a valid P60 or Payslips job using target-supported tax year, filters, required entries, and export format.
 - Invalid or empty search criteria and limits above 500 are rejected before a job is queued.
 - The UI reports queued/running/completed state and accurately reports successes, failures, no-match results, and target truncation.
-- A successful report is validated, stored in private S3, and has matching PostgreSQL metadata including object key, checksum, format, and status.
+- A successful report is validated, stored in private S3, and has matching PostgreSQL metadata including object key, checksum, format, and status. A later matching job reuses the report and skips the target export/download when its metadata is successful, its S3 object is present and valid, and it meets the freshness policy.
+- Concurrent matching jobs do not cause duplicate target downloads; a job that finds an active cache claim waits or retries the cache lookup and reuses the completed artifact.
 - Retrying a transient failure does not create duplicate report rows or duplicate objects. Deterministic errors do not loop through retries.
 - A user cannot read another user's job or report unless explicitly authorized; file links expire and do not reveal bucket credentials.
 - Logs and error responses contain no passwords, NI numbers, report contents, or unnecessary employee data.
