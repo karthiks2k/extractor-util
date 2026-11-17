@@ -63,6 +63,18 @@ flowchart LR
 
 An Azure App Service deployment alone is not a complete design for running concurrent, durable browser jobs. Select the hosting option and managed PostgreSQL service before implementation.
 
+### Infrastructure setup guidelines
+
+Treat these as infrastructure requirements; define environment-specific values and deployment steps in infrastructure-as-code and the deployment runbook.
+
+- **Environments and networking:** Separate development, test, and production resources and data. Place workers and databases in private subnets; expose only required application entry points. Provide controlled worker egress to the target system and AWS services, using VPC endpoints or NAT as appropriate. Confirm any target IP allowlisting requirements.
+- **Compute:** Run the API and extraction workers as separate ECS/Fargate services with separate task roles. Configure CPU, memory, ephemeral storage, health checks, and worker scaling limits for each service. Scale workers using queue depth and message age, subject to the target-session concurrency cap.
+- **Queue:** Provision SQS with a visibility timeout long enough for expected processing, long polling, bounded retries, and a dead-letter queue. Align retry and redrive settings with the job's idempotency behavior and provide an operator process for reviewing exhausted jobs.
+- **Database:** Run PostgreSQL in private subnets with encryption, automated backups and point-in-time recovery. Decide availability, retention, connection pooling, and restore objectives based on the service's requirements; do not make the database publicly accessible.
+- **Object storage:** Use a private S3 bucket with public access blocked, encryption, TLS-only access, lifecycle and deletion policies, and access logging as required. Keep object keys opaque and apply the report retention requirements described below.
+- **Identity and secrets:** Use least-privilege task roles for API and worker access. Store target credentials in a managed secret store, restrict access to the worker that needs them, and use managed key policies for encryption. Do not put credentials in images, source control, or ordinary configuration.
+- **Operations and recovery:** Send application and infrastructure logs and metrics to the approved monitoring service, with sensitive data redacted. Alert on queue age/depth, dead-letter messages, worker failures, database health, and storage errors. Document deployment/rollback, backup restoration, secret rotation, and incident procedures.
+
 ## Job and worker behavior
 
 1. Authenticate the requester and authorize the requested report scope.
@@ -76,6 +88,14 @@ An Azure App Service deployment alone is not a complete design for running concu
 9. Expose the overall job status and aggregate counts for newly downloaded, already available, and failed reports. Do not expose per-report details or report download links in Extractor Util.
 
 Use explicit timeouts, worker concurrency limits, job cancellation where feasible, and cleanup of temporary files on both success and failure. Do not log report contents, passwords, NI numbers, or unredacted target pages.
+
+### Concurrency and capacity controls
+
+- Define the worker pool's minimum, desired, and maximum task counts in the deployment configuration or infrastructure-as-code. For ECS/Fargate, these are the ECS service's task counts; use queue depth and message age to guide autoscaling within the configured maximum.
+- Configure the maximum number of active jobs per worker task separately. Start with one browser job per task to keep browser sessions isolated, then increase only if load testing confirms resource and target-system limits allow it.
+- Enforce a pool-wide cap on simultaneous target sessions. A per-task limit alone is insufficient when the service scales out; use the pool maximum or a shared concurrency limiter, especially if the target restricts concurrent sessions for the service account.
+- Set queue visibility timeout, retry count, and dead-letter behavior to match the job's maximum processing time. Also bound database connections, browser/download timeouts, and job submissions so scaling workers does not overwhelm dependent systems.
+- Keep non-secret limits and timeouts in deployment configuration, with secrets in the managed secret store. Record approved values and scaling signals in the operational runbook. Establish the initial limits through target-approved load testing rather than assuming the target can handle unrestricted parallelism.
 
 ## Data model
 
