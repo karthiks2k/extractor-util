@@ -1,10 +1,10 @@
 # Extractor Util — Target integration specification
 
-## Purpose and current boundary
+## Purpose and scope
 
-Extend the POC from its sample payslip page into an internal report-extraction application. An authorized user selects target-system criteria; a background worker uses the approved service account to retrieve matching reports, stores the report files in private Amazon S3, and records job and report metadata in PostgreSQL.
+Extractor Util is designed to support secure, auditable extraction of employee documents and reports from a target system. An authorized user selects the relevant criteria, and a background worker uses an approved service account to retrieve matching records, validate and store each file in a private Amazon S3 bucket, and record job and report metadata in PostgreSQL.
 
-The current application is a demonstration only: report data is hard-coded, and the login form accepts any values and only redirects. It does not authenticate users or connect to the target payroll system, S3, PostgreSQL, or a queue. The Azure deployment script and the earlier Azure architecture are not production-ready integrations.
+The solution is intended to provide asynchronous report processing with reuse checks, job tracking, and controlled access to extracted files without exposing report content directly to the user interface.
 
 ## Target-system user flow
 
@@ -37,7 +37,7 @@ flowchart LR
     API -->|Persist job and report records| DB[(Amazon RDS PostgreSQL)]
     API -->|Enqueue job ID| Queue[Amazon SQS]
     Queue --> Worker[Isolated Playwright worker]
-    Worker -->|Sign in with approved service account; search and apply filters| Target[Target payroll/reporting site]
+    Worker -->|Sign in with approved service account; search and apply filters| Target[Target system]
     Target -->|Preview page with matching employee report rows| Worker
     Worker -->|For each row, check whether its report is already stored| DB
     DB -->|Matching report details, if found| Worker
@@ -61,7 +61,7 @@ flowchart LR
 | Recommended: AWS-native | Host the API and Playwright workers as containers (for example, ECS/Fargate); use SQS, RDS for PostgreSQL, S3, Secrets Manager, KMS, and CloudWatch. | Keeps the required file store and application runtime in one cloud. Confirm the organization's AWS hosting, network, and identity standards. |
 | Azure hybrid | Retain Azure hosting and queueing, use the approved PostgreSQL service, and upload to Amazon S3. | Requires an approved Azure-to-AWS workload identity and network design; avoid long-lived AWS access keys. Adds cross-cloud operational and egress considerations. |
 
-Do not treat the current Azure App Service script as a complete design for running concurrent, durable browser jobs. Select the hosting option and managed PostgreSQL service before implementation.
+An Azure App Service deployment alone is not a complete design for running concurrent, durable browser jobs. Select the hosting option and managed PostgreSQL service before implementation.
 
 ## Job and worker behavior
 
@@ -117,7 +117,7 @@ Use migrations and database constraints for valid states and relationships. Stor
 
 ## Implementation plan
 
-1. **Resolve discovery gates.** Confirm the hosting/cloud decision, approved AWS region, PostgreSQL service, application SSO provider (the repository's demo login is not existing authentication), data retention, how long a stored report is considered current, and rerun policies, target service-account permissions, and whether the target offers an approved API or stable unattended browser login. Verify export formats and exact filter/lookup behavior for P60 and Payslips.
+1. **Resolve discovery gates.** Confirm the hosting/cloud decision, approved AWS region, PostgreSQL service, application SSO provider, data retention, how long a stored report is considered current, rerun policies, target service-account permissions, and whether the target offers an approved API or stable unattended browser login. Verify export formats and exact filter/lookup behavior for P60 and Payslips.
 2. **Prove the target workflow safely.** In a non-production environment or with approved test data, automate login, year/report selection, required-entry selection, filtering, result pagination, row selection, export, and download for one P60 and one payslip. Measure authentication stability and a 500-report run before choosing worker concurrency/timeouts.
 3. **Implement durable backend.** Add authenticated job/report APIs, PostgreSQL migrations, queueing, isolated Playwright workers, secret retrieval, S3 upload, idempotency, bounded retries, and dead-letter handling.
 4. **Extend the UI.** Replace the single generic filter with tax-year/report selection and report-specific accessible filters/lookups. Add export-format selection, validation, and an overall job status with aggregate counts for downloaded, already available, and failed reports. Do not show per-report details or file links.
@@ -125,7 +125,7 @@ Use migrations and database constraints for valid states and relationships. Stor
 
 ## Acceptance criteria
 
-- Users must authenticate to the application; the current demo redirect is not accepted as authentication.
+- Users must authenticate to the application using the organization's approved authentication.
 - A requester can submit a valid P60 or Payslips job using target-supported tax year, filters, required entries, and export format.
 - Invalid or empty search criteria and limits above 500 are rejected before a job is queued.
 - The UI shows the overall job status and accurate aggregate counts for newly downloaded, already available, and failed reports; it does not show per-report details or file links.
