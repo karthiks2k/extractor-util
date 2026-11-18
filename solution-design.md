@@ -63,6 +63,25 @@ flowchart LR
 
 An Azure App Service deployment alone is not a complete design for running concurrent, durable browser jobs. Select the hosting option and managed PostgreSQL service before implementation.
 
+### Recommended application technology stack
+
+Use the following stack for the AWS-native implementation. Keep the API and worker in the same repository if useful, but build and deploy them as separate containers so browser-job capacity can scale independently from request handling.
+
+| Layer | Recommendation | Notes |
+| --- | --- | --- |
+| User interface | Existing semantic HTML, CSS, and JavaScript | Keep the current lightweight approach for the initial workflow. Add a frontend framework only if the UI's complexity justifies it. |
+| API | Node.js with TypeScript and Fastify | Provide authenticated job-creation and job-status endpoints. Validate request schemas and authorize access to each job. |
+| Extraction worker | Node.js with TypeScript and Playwright | Run as a separate ECS/Fargate service. Reuse the existing Playwright experience, while keeping browser sessions isolated and bounded. |
+| Job queue | Amazon SQS with a dead-letter queue | Queue job identifiers, not credentials or report contents. Configure visibility timeout, retries, and redrive behavior for idempotent jobs. |
+| Metadata database | Amazon RDS for PostgreSQL | Use the `pg` driver and versioned SQL migrations; enforce state, uniqueness, and referential-integrity rules in the database. |
+| Report storage | Private Amazon S3 with AWS KMS encryption | Use opaque object keys, block public access, and grant access only to backend task roles. |
+| Runtime | Docker containers on Amazon ECS with AWS Fargate | Deploy the API and worker as separate services with distinct least-privilege task roles. |
+| User identity and secrets | Organization-approved OIDC/SAML SSO; AWS Secrets Manager | Integrate the existing identity provider. Retrieve target credentials at runtime in the worker; never send them to the UI or store them in job records. |
+| Monitoring | Amazon CloudWatch | Centralize redacted logs, metrics, and alerts for API, queue, worker, database, and storage health. |
+| Infrastructure | Terraform | Provision and review environments, networking, IAM, compute, queue, database, and storage as code. Follow an existing organizational standard if one is mandated. |
+
+Use the repository's existing Playwright end-to-end tests as a starting point, and add focused API/worker tests as those services are implemented. The current Node.js server and browser test workflow are a prototype, not yet a durable job-processing backend; move to TypeScript and the services above as part of the production implementation rather than adding these cloud dependencies to the standalone prototype prematurely.
+
 ### Infrastructure setup guidelines
 
 Treat these as infrastructure requirements; define environment-specific values and deployment steps in infrastructure-as-code and the deployment runbook.
