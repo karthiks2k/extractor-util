@@ -1,30 +1,36 @@
-# Extractor Util — Target integration specification
+# Extractor Util — Target Integration Design
 
-## Purpose and scope
+## Purpose
 
-Extractor Util is designed to support secure, auditable extraction of employee documents and reports from a target system. An authorized user selects the relevant criteria, and a background worker uses an approved service account to retrieve matching records, validate and store each file in a private Amazon S3 bucket, and record job and report metadata in PostgreSQL.
+Extractor Util is an internal application for securely extracting employee reports from a target system. An authenticated user submits report criteria; an isolated background worker applies the criteria, retrieves matching reports, validates the exports, and stores them in a private Amazon S3 bucket.
 
-The solution is intended to provide asynchronous report processing with reuse checks, job tracking, and controlled access to extracted files without exposing report content directly to the user interface.
+PostgreSQL records job state and report metadata. Extractor Util exposes only overall job status and aggregate counts. It does not expose report contents, file links, or direct S3 access.
 
-## Target-system user flow
+## User experience
 
-1. The user signs in to Extractor Util using the organization's application authentication. The target-system service-account login is separate and runs in the worker.
-2. The user selects a tax year from the years offered by the target.
-3. The user selects a report type. The screenshots show Gross To Nett, Import - Absence, Import - Absence (Retro), Leaves with O/S Loans - Retail, Loans, Messages (A/B/C), P45s, P60, Payslips, Payslips - Retail, Pension / AVC, Statement of Earnings P45 - Retail, Statement of Earnings P60, TC02, and Voluntary Deductions. The initial release should support P60 and Payslips; keep report-specific behavior extensible.
-4. The application displays filters supported by the selected report. The P60 example includes Employee Number, Group, NI Number, Surname, Job Name, Job Number, result limit, sorting, reuse-criteria, and selected fields. Group and Job Name may require a target-provided lookup/selection dialog. The result limit defaults to 50 and is capped at 500.
-5. After search, the target returns matching records. The user can select a result to preview it, then choose an export format offered by the target. When processing the job, the worker uses the target's report preview/results table to identify each employee/report row and check whether that report is already stored before exporting it. If it is, the worker records it internally as already available for the job without exporting or downloading another copy; the UI only updates the already-available count. The screenshots show Word document, Word document (with the text overlay), Text file (no page breaks), Text file (with page breaks), Text file (with page breaks and text overlay), PDF document, and PDF document (with an image overlay), plus a compressed-file option. Do not assume every format is available for every report type; use the target's available options and an explicit allowlist.
-6. Extractor Util runs the extraction asynchronously and shows the overall job status and aggregate counts: newly downloaded reports, reports already available, and failed reports. It does not show per-report details or file links.
-7. If no valid stored report is found, the worker captures the selected export through Playwright's download handling, validates it, and uploads it to S3. If a valid stored report is found, the worker records it as already available for the job and points internally to the existing S3 object; it does not export, download, or copy the file again. Neither path opens a desktop “Save as” dialog. Extractor Util does not provide report downloads.
+1. The user signs in through the organization's approved application identity provider.
+2. The user selects a tax year and report type supported by the target.
+3. The application presents only the filters, lookups, sorting options, and selected fields supported by that report.
+4. The user enters criteria and submits a search. Result-limit-only searches are rejected, and the maximum result limit is 500.
+5. The user previews matching results and selects an export format offered by the target.
+6. The application submits the validated request as an asynchronous job and displays:
+   - Job status: queued, running, succeeded, partially succeeded, or failed.
+   - Newly downloaded report count.
+   - Already-available report count.
+   - Failed report count.
+7. Extractor Util does not provide report downloads or per-report file links. The target-system service account is used only by the worker.
 
-### Filter and result behavior
+### Filter and search behavior
 
-- Load tax years, report types, lookup entries, and export formats from the target where possible; avoid hard-coding changing lists.
-- Validate that at least one usable search criterion is present before starting a job. Do not accept a result-limit-only search. Enforce the configured maximum of 500 returned reports per job.
-- Use report-specific filter definitions so unsupported fields are not submitted. Preserve sort direction and selected fields only where the target supports them.
-- Treat result rows as report candidates. Before exporting each row, check whether a successfully completed report for the same employee, year, report type, format, and relevant options is already recorded, and verify that its S3 file is available and valid. If so, record it internally as already available for the new job; otherwise export it, validate it, and store it in S3. In either case, record the per-job outcome and metadata. Show only aggregate counts in the UI.
-- Initially leave the compressed-file option off unless it is required. If enabled later, define whether the archive is stored as one artifact or safely unpacked into individual reports before implementing it.
-- Support pagination and count limits explicitly. Record when the target truncates results or the limit is reached, and do not mark the job fully `succeeded` if not all matching reports were retrieved. Keep this reflected in the overall job status rather than adding separate detail to the UI.
-- The “reuse criteria” control affects the user's next search only; it must not cause criteria to leak between users or jobs.
+- Load tax years, report types, lookup values, and export formats from the target where a stable target interface exists.
+- Validate at least one usable search criterion before queueing a job.
+- Apply report-specific filter definitions and do not submit unsupported fields.
+- Preserve sorting and selected fields only when supported by the selected report.
+- Display lookup selections through target-provided dialogs or equivalent accessible controls.
+- Support pagination and record whether a search is truncated or reaches the configured limit.
+- Mark a job `partially_succeeded` when all matching reports are not processed, rather than implying complete success.
+- Treat the “reuse criteria” control as search settings for the current user’s next search only. It must not leak between users or jobs.
+- Leave the compressed-file option disabled until its artifact format is defined: either as one archive or as unpacked individual reports.
 
 ## Proposed architecture
 
@@ -54,59 +60,60 @@ flowchart LR
     Queue -. retries exhausted .-> DLQ[Dead-letter queue]
 ```
 
-### Hosting alternatives
+### Application technology
 
-| Option | Description | Considerations |
-| --- | --- | --- |
-| Recommended: AWS-native | Host the API and Playwright workers as containers (for example, ECS/Fargate); use SQS, RDS for PostgreSQL, S3, Secrets Manager, KMS, and CloudWatch. | Keeps the required file store and application runtime in one cloud. Confirm the organization's AWS hosting, network, and identity standards. |
-| Azure hybrid | Retain Azure hosting and queueing, use the approved PostgreSQL service, and upload to Amazon S3. | Requires an approved Azure-to-AWS workload identity and network design; avoid long-lived AWS access keys. Adds cross-cloud operational and egress considerations. |
-
-An Azure App Service deployment alone is not a complete design for running concurrent, durable browser jobs. Select the hosting option and managed PostgreSQL service before implementation.
-
-### Recommended application technology stack
-
-Use the following stack for the AWS-native implementation. Keep the API and worker in the same repository if useful, but build and deploy them as separate containers so browser-job capacity can scale independently from request handling.
+The recommended AWS-native implementation uses the following stack. Keep the API and worker in the same repository if useful, but deploy them as separate containers so browser-job capacity can scale independently from request handling.
 
 | Layer | Recommendation | Notes |
 | --- | --- | --- |
 | User interface | Existing semantic HTML, CSS, and JavaScript | Keep the current lightweight approach for the initial workflow. Add a frontend framework only if the UI's complexity justifies it. |
 | API | Node.js with TypeScript and Fastify | Provide authenticated job-creation and job-status endpoints. Validate request schemas and authorize access to each job. |
-| Extraction worker | Node.js with TypeScript and Playwright | Run as a separate ECS/Fargate service. Reuse the existing Playwright experience, while keeping browser sessions isolated and bounded. |
-| Job queue | Amazon SQS with a dead-letter queue | Queue job identifiers, not credentials or report contents. Configure visibility timeout, retries, and redrive behavior for idempotent jobs. |
-| Metadata database | Amazon RDS for PostgreSQL | Use the `pg` driver and versioned SQL migrations; enforce state, uniqueness, and referential-integrity rules in the database. |
+| Extraction worker | Node.js with TypeScript and Playwright | Run as a separate ECS/Fargate service. Reuse existing Playwright patterns while keeping browser sessions isolated and bounded. |
+| Job queue | Amazon SQS with a dead-letter queue | Queue job identifiers, not credentials or report contents. Use the AWS SDK for JavaScript (`@aws-sdk/*`) and configure visibility timeout, retries, and redrive behavior for idempotent jobs. |
+| Metadata database | Amazon RDS for PostgreSQL | Use the `pg` or a suitable ORM package and versioned SQL migrations; enforce state, uniqueness, and referential-integrity rules in the database. |
 | Report storage | Private Amazon S3 with AWS KMS encryption | Use opaque object keys, block public access, and grant access only to backend task roles. |
 | Runtime | Docker containers on Amazon ECS with AWS Fargate | Deploy the API and worker as separate services with distinct least-privilege task roles. |
 | User identity and secrets | Organization-approved OIDC/SAML SSO; AWS Secrets Manager | Integrate the existing identity provider. Retrieve target credentials at runtime in the worker; never send them to the UI or store them in job records. |
 | Monitoring | Amazon CloudWatch | Centralize redacted logs, metrics, and alerts for API, queue, worker, database, and storage health. |
-| Infrastructure | Terraform | Provision and review environments, networking, IAM, compute, queue, database, and storage as code. Follow an existing organizational standard if one is mandated. |
+| Infrastructure | Terraform | Provision environments, networking, IAM, compute, queue, database, and storage as code. |
 
-Use the repository's existing Playwright end-to-end tests as a starting point, and add focused API/worker tests as those services are implemented. The current Node.js server and browser test workflow are a prototype, not yet a durable job-processing backend; move to TypeScript and the services above as part of the production implementation rather than adding these cloud dependencies to the standalone prototype prematurely.
+Node.js and TypeScript will implement the API and extraction worker. Use the Node.js test runner or `vitest` for unit and integration tests, and retain Playwright for browser-level end-to-end coverage. The current Node.js prototype is not a durable production backend and should not be extended with premature queue or cloud dependencies.
 
-### Infrastructure setup guidelines
+### Infrastructure requirements
 
-Treat these as infrastructure requirements; define environment-specific values and deployment steps in infrastructure-as-code and the deployment runbook.
-
-- **Environments and networking:** Separate development, test, and production resources and data. Place workers and databases in private subnets; expose only required application entry points. Provide controlled worker egress to the target system and AWS services, using VPC endpoints or NAT as appropriate. Confirm any target IP allowlisting requirements.
-- **Compute:** Run the API and extraction workers as separate ECS/Fargate services with separate task roles. Configure CPU, memory, ephemeral storage, health checks, and worker scaling limits for each service. Scale workers using queue depth and message age, subject to the target-session concurrency cap.
-- **Queue:** Provision SQS with a visibility timeout long enough for expected processing, long polling, bounded retries, and a dead-letter queue. Align retry and redrive settings with the job's idempotency behavior and provide an operator process for reviewing exhausted jobs.
-- **Database:** Run PostgreSQL in private subnets with encryption, automated backups and point-in-time recovery. Decide availability, retention, connection pooling, and restore objectives based on the service's requirements; do not make the database publicly accessible.
-- **Object storage:** Use a private S3 bucket with public access blocked, encryption, TLS-only access, lifecycle and deletion policies, and access logging as required. Keep object keys opaque and apply the report retention requirements described below.
-- **Identity and secrets:** Use least-privilege task roles for API and worker access. Store target credentials in a managed secret store, restrict access to the worker that needs them, and use managed key policies for encryption. Do not put credentials in images, source control, or ordinary configuration.
-- **Operations and recovery:** Send application and infrastructure logs and metrics to the approved monitoring service, with sensitive data redacted. Alert on queue age/depth, dead-letter messages, worker failures, database health, and storage errors. Document deployment/rollback, backup restoration, secret rotation, and incident procedures.
+- Separate development, test, and production resources and data.
+- Deploy the API and worker as separate ECS/Fargate services with separate task roles.
+- Place workers and PostgreSQL in private subnets. Restrict public entry points to the application API and UI.
+- Permit worker egress only to approved target-system endpoints and required AWS services.
+- Use SQS for asynchronous delivery, with bounded retries, a visibility timeout aligned to maximum job duration, and a dead-letter queue.
+- Encrypt PostgreSQL and S3 resources; keep databases private and configure backups and point-in-time recovery.
+- Use CloudWatch for redacted application and infrastructure logs, metrics, and alerts.
+- Document deployment, rollback, backup restoration, secret rotation, and incident procedures.
+- Confirm the approved AWS region, network standards, target IP allowlisting, managed PostgreSQL service, and application identity provider before implementation.
 
 ## Job and worker behavior
 
 1. Authenticate the requester and authorize the requested report scope.
-2. Validate report type, tax year, supported filters, required entries, result limit, and export format. Reject invalid requests with actionable errors.
-3. In one database transaction, create a queued job and its request/audit metadata. Enqueue its ID; handle enqueue failure explicitly so the job cannot remain falsely queued.
-4. A worker claims the job, marks it running, and opens an isolated browser context. Retrieve the service-account secret at runtime from a secrets manager; never send it to the UI or persist it in job records.
-5. Navigate the target's tax-year and report selection flow, apply the validated filters, select required entries, and reach the report preview/results page. Collect its report rows within the configured cap.
-6. For each row in the preview table, identify the report using the employee number, tax year, report type, export format, and any options that affect its contents. Before invoking the export, look for a previously successful matching report in PostgreSQL and verify that its S3 object exists and matches the recorded metadata. If it does, record it internally as already available for the new job and skip the target export and download; do not create or copy another S3 object. If no valid matching report is found, reserve the report identifier so concurrent jobs do not download the same report at once, then check the metadata and S3 object again. If the report is still not available, select the row, invoke the requested export, capture the browser download to ephemeral worker storage, validate file type/signature and non-zero size, calculate a checksum, and upload to S3.
-7. Persist each report's status and metadata, then calculate the job's final status: `succeeded`, `partially_succeeded`, or `failed`. Mark a matching report as already available for the new job and reference its existing S3 object; do not create a second object or change the original `stored_at`. Count it as a successful outcome. A no-match result is a completed job with zero reports, not a worker error.
-8. Retry only transient failures with bounded exponential backoff. Do not retry invalid filters, unsupported report/format combinations, authorization failures, or other deterministic errors. Make retries idempotent and route exhausted jobs to a dead-letter queue for operator review.
-9. Expose the overall job status and aggregate counts for newly downloaded, already available, and failed reports. Do not expose per-report details or report download links in Extractor Util.
+2. Validate the tax year, report type, filters, required entries, result limit, and export format. Return actionable validation errors.
+3. Create the queued job and audit metadata in one database transaction. Enqueue the job ID separately and explicitly handle enqueue failure.
+4. Claim the job in a worker, mark it running, and open an isolated browser context. Retrieve the target service-account secret at runtime; never expose or persist it in job records.
+5. Navigate the target, apply the validated criteria, and collect preview rows up to the configured limit.
+6. For each row:
+   - Build an opaque matching identifier from the employee record, tax year, report type, export format, and content-affecting options.
+   - Look up a successful, in-date matching report and verify the S3 object against its recorded metadata.
+   - If valid, record the report as already available and reference the existing S3 object.
+   - Otherwise, acquire a database reservation for the matching identifier and recheck it before export.
+   - If still unavailable, select the row and capture the target export in ephemeral worker storage.
+   - Validate the file signature and non-zero size, calculate a checksum, upload it to S3, and persist the report metadata.
+7. Calculate the job outcome:
+   - `succeeded`: all processed reports completed successfully.
+   - `partially_succeeded`: the target limit was reached, results were truncated, or some reports failed.
+   - `failed`: no reports could be processed or the worker cannot continue.
+   - `cancelled`: execution stopped by cancellation or an operator.
+   - A valid search with no matches completes successfully with zero reports.
+8. Retry only bounded, transient failures. Do not retry invalid input, unsupported combinations, authorization failures, or deterministic target errors. Route exhausted retries to the dead-letter queue.
 
-Use explicit timeouts, worker concurrency limits, job cancellation where feasible, and cleanup of temporary files on both success and failure. Do not log report contents, passwords, NI numbers, or unredacted target pages.
+Apply explicit timeouts and clean temporary files after success or failure. Do not log report contents, passwords, NI numbers, or unredacted target pages.
 
 ### Concurrency and capacity controls
 
@@ -118,7 +125,7 @@ Use explicit timeouts, worker concurrency limits, job cancellation where feasibl
 
 ## Data model
 
-Use PostgreSQL as the source of truth for job state and report metadata; S3 is the source of truth for report bytes.
+PostgreSQL is the source of truth for job state and report metadata. S3 is the source of truth for report bytes.
 
 ### `extraction_jobs`
 
@@ -141,23 +148,25 @@ Use PostgreSQL as the source of truth for job state and report metadata; S3 is t
 - `created_at`, `stored_at`, `completed_at`, safe failure code/message
 - Unique constraints to prevent duplicate report rows for the same target record within a job
 
-Use the employee number together with tax year, report type, export format, and any content-affecting report options to identify a matching report; employee number alone is not sufficient. Store the report-matching identifier in an opaque form and keep it out of S3 object keys. Link a report into a new job's results only when its metadata indicates successful completion and its S3 object is present and passes integrity checks. If the object is missing or invalid, treat it as unavailable and download it again. To prevent simultaneous jobs from downloading the same report, use a database-backed reservation for this identifier and check again after acquiring the reservation. Define how long a stored report remains eligible to be treated as current, especially if reports can change at the target.
+The matching identifier must include all report options that affect content; employee number alone is insufficient. A report may be reused only while its metadata is successful, its S3 object is present and valid, and it remains within the configured freshness period. Database migrations and constraints must enforce valid states and relationships.
 
-Use migrations and database constraints for valid states and relationships. Store no report contents in PostgreSQL. Minimize personal metadata, restrict database access, and define an explicit retention/deletion policy for both metadata and S3 objects before production.
+PostgreSQL must not store report contents. Retention, access, and deletion policies for personal metadata and S3 objects must be defined before production.
 
-## S3, access, and privacy requirements
+## Storage and privacy requirements
 
-- Use a private bucket with public access blocked, encryption at rest (prefer a customer-managed KMS key where required), TLS in transit, least-privilege worker/application roles, and access logging/auditing.
-- Use opaque, non-identifying object keys, such as `reports/{tax-year}/{report-type}/{report-id}.{extension}`. Preserve the target export as-is; do not transform or silently substitute formats.
-- Use an idempotent key for retries of the same report. A deliberate job rerun creates a new job/report record, but may point to the existing S3 object when the report-matching identifier matches and the report is still considered current. This does not create or copy another S3 object. Apply lifecycle expiration and deletion consistently to objects, database metadata, and backups in accordance with the organization's approved retention requirements; do not delete an object while retained report records still reference it.
-- Do not expose bucket credentials or report object URLs in Extractor Util. The app provides no report-download links; S3 access is limited to the required backend roles.
-- Store target credentials in a managed secret store, rotate them, and grant the worker only the required target and storage access. Record which application user requested each job even though a service account performs the target login.
-- Confirm the service account's approved report scope and target-system terms. MFA, CAPTCHA, IP restrictions, session expiry, and password rotation are discovery gates. Do not bypass target controls; use an approved API or target-approved authentication flow if unattended browser login is not supported.
+- Store reports in a private S3 bucket with public access blocked, TLS-only access, encryption at rest, and access logging.
+- Use least-privilege task roles and opaque keys such as `reports/{tax-year}/{report-type}/{report-id}.{extension}`.
+- Preserve the target export as-is. Do not transform it or silently substitute another format.
+- Use idempotent object keys for retries. A rerun may reference an existing, current object but must not create or copy another object.
+- Never expose bucket credentials or object URLs. The application has no report-download endpoint or links.
+- Store target credentials in a managed secret store and grant access only to the worker. Record which application user requested the job even though the target login uses a service account.
+- Apply lifecycle expiration consistently to S3 objects, PostgreSQL metadata, and backups. Do not delete an object while retained report records reference it.
+- Confirm the service account's approved report scope and target-system terms. MFA, CAPTCHA, IP restrictions, session expiry, password rotation, and stable unattended authentication are discovery gates. Do not bypass controls; use an approved API or target-approved authentication flow where browser automation is not permitted.
 
 ## Implementation plan
 
-1. **Resolve discovery gates.** Confirm the hosting/cloud decision, approved AWS region, PostgreSQL service, application SSO provider, data retention, how long a stored report is considered current, rerun policies, target service-account permissions, and whether the target offers an approved API or stable unattended browser login. Verify export formats and exact filter/lookup behavior for P60 and Payslips.
-2. **Prove the target workflow safely.** In a non-production environment or with approved test data, automate login, year/report selection, required-entry selection, filtering, result pagination, row selection, export, and download for one P60 and one payslip. Measure authentication stability and a 500-report run before choosing worker concurrency/timeouts.
+1. **Resolve discovery gates.** Confirm the hosting/cloud decision, approved AWS region, PostgreSQL service, application SSO provider, data retention, how long a stored report is considered current, rerun policies, target service-account permissions, and whether the target offers an approved API or stable unattended browser login. Verify export formats and exact filter/lookup behavior for the supported report types.
+2. **Prove the target workflow safely.** In a non-production environment or with approved test data, automate login, year/report selection, required-entry selection, filtering, result pagination, row selection, export, and download for representative report types. Measure authentication stability and a 500-report run before choosing worker concurrency/timeouts.
 3. **Implement durable backend.** Add authenticated job/report APIs, PostgreSQL migrations, queueing, isolated Playwright workers, secret retrieval, S3 upload, idempotency, bounded retries, and dead-letter handling.
 4. **Extend the UI.** Replace the single generic filter with tax-year/report selection and report-specific accessible filters/lookups. Add export-format selection, validation, and an overall job status with aggregate counts for downloaded, already available, and failed reports. Do not show per-report details or file links.
 5. **Harden and release.** Add monitoring/alerts, audit events, retention lifecycle, backup/deletion procedures, operational runbooks, least-privilege policies, and production acceptance tests. Deploy only after authorization, privacy, and target automation gates are approved.
@@ -165,7 +174,7 @@ Use migrations and database constraints for valid states and relationships. Stor
 ## Acceptance criteria
 
 - Users must authenticate to the application using the organization's approved authentication.
-- A requester can submit a valid P60 or Payslips job using target-supported tax year, filters, required entries, and export format.
+- A requester can submit a valid job using a target-supported report type, tax year, filters, required entries, and export format.
 - Invalid or empty search criteria and limits above 500 are rejected before a job is queued.
 - The UI shows the overall job status and accurate aggregate counts for newly downloaded, already available, and failed reports; it does not show per-report details or file links.
 - If target results are truncated or a result limit is reached, the overall job status does not imply that all matching reports were retrieved.
