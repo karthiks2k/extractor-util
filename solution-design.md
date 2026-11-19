@@ -66,8 +66,8 @@ The recommended AWS-native implementation uses the following stack. Keep the API
 
 | Layer | Recommendation | Notes |
 | --- | --- | --- |
-| User interface | Existing semantic HTML, CSS, and JavaScript | Keep the current lightweight approach for the initial workflow. Add a frontend framework only if the UI's complexity justifies it. |
-| API | Node.js with TypeScript and Fastify | Provide authenticated job-creation and job-status endpoints. Validate request schemas and authorize access to each job. |
+| User interface | Next js, React, HTML, CSS, and JavaScript/Typescript | Keep the current lightweight approach for the initial workflow. Add a frontend framework only if the UI's complexity justifies it. |
+| API | ASP.Net CORE web api or Node.js with TypeScript and Fastify | Provide authenticated job-creation and job-status endpoints. Validate request schemas and authorize access to each job. |
 | Extraction worker | Node.js with TypeScript and Playwright | Run as a separate ECS/Fargate service. Reuse existing Playwright patterns while keeping browser sessions isolated and bounded. |
 | Job queue | Amazon SQS with a dead-letter queue | Queue job identifiers, not credentials or report contents. Use the AWS SDK for JavaScript (`@aws-sdk/*`) and configure visibility timeout, retries, and redrive behavior for idempotent jobs. |
 | Metadata database | Amazon RDS for PostgreSQL | Use the `pg` or a suitable ORM package and versioned SQL migrations; enforce state, uniqueness, and referential-integrity rules in the database. |
