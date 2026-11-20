@@ -125,7 +125,7 @@ Apply explicit timeouts and clean temporary files after success or failure. Do n
 
 ## Data model
 
-PostgreSQL is the source of truth for job state and report metadata. S3 is the source of truth for report bytes.
+PostgreSQL is the source of truth for job state, employee records, and report metadata. S3 is the source of truth for report bytes.
 
 ### `extraction_jobs`
 
@@ -138,17 +138,25 @@ PostgreSQL is the source of truth for job state and report metadata. S3 is the s
 - `created_at`, `started_at`, `completed_at`
 - Safe, non-sensitive failure code/message; do not store secrets or raw page content
 
+### `employee_records`
+
+- `id` UUID primary key
+- Filterable employee attributes supported by the target, such as employee number, group, NI number, surname, job name, and job number; treat these as sensitive personal data and restrict access
+- `created_at`
+
+The UUID is an internal identifier; no target-system record identifier is required. Define how employees are recognized across extraction jobs to prevent duplicate employee rows. Use the employee number as that business identifier only if it is confirmed to be unique and stable in the new system. Employee attributes are treated as immutable after the record is first extracted. If a later extraction returns conflicting attributes for the same employee, handle it through an explicit correction process rather than silently overwriting the record. Add indexes for the supported filter patterns; do not index or expose raw NI numbers unnecessarily.
+
 ### `extracted_reports`
 
-- `id` UUID primary key; `job_id` foreign key
-- Target record identifier and only the employee/report attributes needed for audit and retrieval; treat these as sensitive personal data
-- `status` (including whether the report was newly downloaded or already available), `attempt_count`, `export_format`, safe `original_filename`, MIME type, byte size, SHA-256 checksum
+- `id` UUID primary key; `job_id` and `employee_record_id` foreign keys
+- `tax_year`, `report_type`, `export_format`
+- `status` (including whether the report was newly downloaded or already available), `attempt_count`, safe `original_filename`, MIME type, byte size, SHA-256 checksum
 - `s3_bucket`, opaque `s3_object_key`; never put employee names, NI numbers, or other direct identifiers in object keys
-- Opaque report-matching identifier and, when a report is already available, a reference to the original metadata row and S3 object
+- Opaque report-matching identifier and, when a report is already available, a reference to the original report row and S3 object
 - `created_at`, `stored_at`, `completed_at`, safe failure code/message
-- Unique constraints to prevent duplicate report rows for the same target record within a job
+- Unique constraints to prevent duplicate report rows for the same employee record, tax year, report type, and content-affecting options within a job
 
-The matching identifier must include all report options that affect content; employee number alone is insufficient. A report may be reused only while its metadata is successful, its S3 object is present and valid, and it remains within the configured freshness period. Database migrations and constraints must enforce valid states and relationships.
+The new employee records system can filter reports by joining `extracted_reports` to `employee_records`. The matching identifier must include the stable employee identity selected for the new system, tax year, report type, export format, and all other report options that affect content; employee number alone is insufficient because report options also affect content. A report may be reused only while its metadata is successful, its S3 object is present and valid, and it remains within the configured freshness period. Database migrations and constraints must enforce valid states and relationships.
 
 PostgreSQL must not store report contents. Retention, access, and deletion policies for personal metadata and S3 objects must be defined before production.
 
