@@ -50,7 +50,7 @@ flowchart LR
     Worker -->|If metadata is found, verify its S3 file| S3[(Private Amazon S3 bucket)]
     S3 -->|File availability and integrity| Worker
     Worker --> StoredReport{Is this report already stored and valid?}
-    StoredReport -->|Yes: record as already available; no new download| DB
+    StoredReport -->|Yes: count as already available for this job; no new report row or download| DB
     StoredReport -->|No: reserve this report, check again, then request its export| Target
     Target -->|Exported report| Worker
     Worker -->|Save a temporary copy for validation| Temp[Ephemeral temporary storage]
@@ -101,7 +101,7 @@ Node.js and TypeScript will implement the API and extraction worker. Use the Nod
 6. For each row:
    - Build an opaque matching identifier from the employee record, tax year, report type, export format, and content-affecting options.
    - Look up a successful, in-date matching report and verify the S3 object against its recorded metadata.
-   - If valid, record the report as already available and reference the existing S3 object.
+   - If valid, count the report as already available for this job. Do not insert another `extracted_reports` row or create another S3 object.
    - Otherwise, acquire a database reservation for the matching identifier and recheck it before export.
    - If still unavailable, select the row and capture the target export in ephemeral worker storage.
    - Validate the file signature and non-zero size, calculate a checksum, upload it to S3, and persist the report metadata.
@@ -127,7 +127,17 @@ Apply explicit timeouts and clean temporary files after success or failure. Do n
 
 PostgreSQL is the source of truth for job state, employee records, and report metadata. S3 is the source of truth for report bytes.
 
+```mermaid
+erDiagram
+    extraction_jobs ||--o{ extracted_reports : "has results"
+    employee_records ||--o{ extracted_reports : "has reports"
+```
+
+Each `extracted_reports` row references exactly one job and one employee record. A job or employee record can have zero or more report rows. If a valid matching report already exists from an earlier job, no new report row is created; only the current job's `already_available_reports` count is updated.
+
 ### `extraction_jobs`
+
+Stores each submitted extraction request and its lifecycle, criteria, and aggregate outcome. Create the row when the job is queued, update it as processing progresses, and finalize its status and report counts when processing ends.
 
 - `id` UUID primary key
 - `requested_by` authenticated application user ID
@@ -140,6 +150,8 @@ PostgreSQL is the source of truth for job state, employee records, and report me
 
 ### `employee_records`
 
+Stores one employee record with the filterable employee attributes used by the new system. Each report references this shared record and its extraction job rather than duplicating employee attributes for every report.
+
 - `id` UUID primary key
 - Filterable employee attributes supported by the target, such as employee number, group, NI number, surname, job name, and job number; treat these as sensitive personal data and restrict access
 - `created_at`
@@ -148,15 +160,17 @@ The UUID is an internal identifier; no target-system record identifier is requir
 
 ### `extracted_reports`
 
+Stores report records for downloads and failed attempts associated with a job. If a matching valid report already exists from an earlier job, do not add another row; count it as already available on the current job instead.
+
 - `id` UUID primary key; `job_id` and `employee_record_id` foreign keys
 - `tax_year`, `report_type`, `export_format`
-- `status` (including whether the report was newly downloaded or already available), `attempt_count`, safe `original_filename`, MIME type, byte size, SHA-256 checksum
+- `status` (such as `downloaded` or `failed`), `attempt_count`, safe `original_filename`, MIME type, byte size, SHA-256 checksum
 - `s3_bucket`, opaque `s3_object_key`; never put employee names, NI numbers, or other direct identifiers in object keys
-- Opaque report-matching identifier and, when a report is already available, a reference to the original report row and S3 object
+- Opaque report-matching identifier used to find a valid report from an earlier job
 - `created_at`, `stored_at`, `completed_at`, safe failure code/message
 - Unique constraints to prevent duplicate report rows for the same employee record, tax year, report type, and content-affecting options within a job
 
-The new employee records system can filter reports by joining `extracted_reports` to `employee_records`. The matching identifier must include the stable employee identity selected for the new system, tax year, report type, export format, and all other report options that affect content; employee number alone is insufficient because report options also affect content. A report may be reused only while its metadata is successful, its S3 object is present and valid, and it remains within the configured freshness period. Database migrations and constraints must enforce valid states and relationships.
+The new employee records system can filter reports by joining `extracted_reports` to `employee_records`. The matching identifier must include the stable employee identity selected for the new system, tax year, report type, export format, and all other report options that affect content; employee number alone is insufficient because report options also affect content. A report may be reused only while its metadata is successful, its S3 object is present and valid, and it remains within the configured freshness period. Job-level aggregate counts must be updated idempotently so a retry does not count the same report more than once. Database migrations and constraints must enforce valid states and relationships.
 
 PostgreSQL must not store report contents. Retention, access, and deletion policies for personal metadata and S3 objects must be defined before production.
 
@@ -186,8 +200,9 @@ PostgreSQL must not store report contents. Retention, access, and deletion polic
 - Invalid or empty search criteria and limits above 500 are rejected before a job is queued.
 - The UI shows the overall job status and accurate aggregate counts for newly downloaded, already available, and failed reports; it does not show per-report details or file links.
 - If target results are truncated or a result limit is reached, the overall job status does not imply that all matching reports were retrieved.
-- A successful report is validated, stored in private S3, and has matching PostgreSQL metadata including object key, checksum, format, and status. A later matching job records it as already available and increments that count without exporting, downloading, or creating a second S3 object when the metadata is successful, the object is present and valid, and the report is still considered current.
-- Concurrent matching jobs do not cause duplicate target downloads; a job that finds another job processing the same report waits or checks again, then records it as already available.
+- A successful report is validated, stored in private S3, and has matching PostgreSQL metadata including object key, checksum, format, and status. A later matching job counts it as already available without inserting another `extracted_reports` row, exporting, downloading, or creating a second S3 object when the metadata is successful, the object is present and valid, and the report is still considered current.
+- Concurrent matching jobs do not cause duplicate target downloads; a job that finds another job processing the same report waits or checks again, then counts it as already available without inserting another report row.
+- Retrying a job does not count the same report more than once in its aggregate counts.
 - Retrying a transient failure does not create duplicate report rows or duplicate objects. Deterministic errors do not loop through retries.
 - A user cannot view another user's job status or counts unless explicitly authorized. Extractor Util does not expose report files, object URLs, or bucket credentials.
 - Logs and error responses contain no passwords, NI numbers, report contents, or unnecessary employee data.
