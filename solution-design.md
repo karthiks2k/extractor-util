@@ -1,4 +1,4 @@
-# Extractor Util — Target Integration Design
+# Extractor Util
 
 ## Purpose
 
